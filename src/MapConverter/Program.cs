@@ -46,9 +46,9 @@ namespace PurplePen.MapConverter
     /// 
     /// Usage: MapConverter [--dpi &lt;dpi&gt;] &lt;source_map&gt; &lt;destination_png&gt;
     /// </summary>
-    class Program
+    public class Program
     {
-        static int Main(string[] args)
+        public static int Main(string[] args)
         {
             float dpi = 200;
             string sourceFile = null;
