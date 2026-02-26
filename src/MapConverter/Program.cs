@@ -305,10 +305,11 @@ namespace PurplePen.MapConverter
             }
 
             // Compute the world file extension based on the image file extension.
+            // Standard convention: 2nd char, 4th char, then 'w'. E.g. .png -> .pgw, .jpg -> .jgw
             string imageExtension = Path.GetExtension(imageFile);
             string worldExtension;
             if (imageExtension.Length == 4) {
-                // Standard convention: first char, last char, then 'w'. E.g. .png -> .pgw, .jpg -> .jgw
+                // Standard convention: 2nd char, 4th char, then 'w'. E.g. .png -> .pgw, .jpg -> .jgw
                 worldExtension = "." + imageExtension[1] + imageExtension[3] + "w";
             }
             else {
