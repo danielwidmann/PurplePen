@@ -369,6 +369,7 @@ namespace PurplePen.MapConverter
                 ProjectionInfo destProj = ProjectionInfo.FromProj4String(targetProj4);
 
                 // Reproject the three reference points from the map's CRS to the target CRS.
+                // Elevation is 0 since orienteering maps use 2D planar coordinates.
                 for (int idx = 0; idx < 3; idx++) {
                     double[] xy = { realX[idx], realY[idx] };
                     double[] z = { 0 };
