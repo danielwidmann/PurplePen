@@ -34,23 +34,30 @@
 
 using System;
 using System.Drawing;
+using System.Globalization;
 using System.IO;
 using PurplePen.Graphics2D;
 using PurplePen.MapModel;
+using SkiaSharp;
 
 namespace PurplePen.MapConverter
 {
     /// <summary>
-    /// Command line utility to convert orienteering map files (.ocd, .omap) to PNG images
+    /// Command line utility to convert orienteering map files (.ocd, .omap) to image files
     /// using the Skia rendering backend for cross-platform support.
     /// 
-    /// Usage: MapConverter [--dpi &lt;dpi&gt;] &lt;source_map&gt; &lt;destination_png&gt;
+    /// Usage: MapConverter [options] &lt;source_map&gt; &lt;destination_image&gt;
     /// </summary>
     public class Program
     {
         public static int Main(string[] args)
         {
             float dpi = 200;
+            int quality = 80;
+            bool antiAlias = true;
+            bool worldFile = false;
+            bool cmyk = false;
+            string format = null;
             string sourceFile = null;
             string destFile = null;
 
@@ -63,6 +70,33 @@ namespace PurplePen.MapConverter
                         return 1;
                     }
                     i += 2;
+                }
+                else if (args[i] == "--quality" && i + 1 < args.Length) {
+                    if (!int.TryParse(args[i + 1], out quality) || quality < 1 || quality > 100) {
+                        Console.Error.WriteLine("Error: Quality must be between 1 and 100.");
+                        return 1;
+                    }
+                    i += 2;
+                }
+                else if (args[i] == "--format" && i + 1 < args.Length) {
+                    format = args[i + 1].ToLowerInvariant();
+                    if (format != "png" && format != "jpg" && format != "gif") {
+                        Console.Error.WriteLine("Error: Format must be png, jpg, or gif.");
+                        return 1;
+                    }
+                    i += 2;
+                }
+                else if (args[i] == "--no-anti-alias") {
+                    antiAlias = false;
+                    i++;
+                }
+                else if (args[i] == "--world-file") {
+                    worldFile = true;
+                    i++;
+                }
+                else if (args[i] == "--cmyk") {
+                    cmyk = true;
+                    i++;
                 }
                 else if (args[i].StartsWith("-")) {
                     Console.Error.WriteLine("Error: Unknown option '{0}'.", args[i]);
@@ -94,14 +128,28 @@ namespace PurplePen.MapConverter
                 return 1;
             }
 
-            string extension = Path.GetExtension(sourceFile).ToLowerInvariant();
-            if (extension != ".ocd" && extension != ".omap") {
+            string sourceExtension = Path.GetExtension(sourceFile).ToLowerInvariant();
+            if (sourceExtension != ".ocd" && sourceExtension != ".omap") {
                 Console.Error.WriteLine("Error: Source file must be an .ocd or .omap file.");
                 return 1;
             }
 
+            // Determine output format from --format flag or destination file extension.
+            if (format == null) {
+                string destExtension = Path.GetExtension(destFile).ToLowerInvariant();
+                if (destExtension == ".jpg" || destExtension == ".jpeg") {
+                    format = "jpg";
+                }
+                else if (destExtension == ".gif") {
+                    format = "gif";
+                }
+                else {
+                    format = "png";
+                }
+            }
+
             try {
-                ConvertMapToPng(sourceFile, destFile, dpi);
+                ConvertMap(sourceFile, destFile, dpi, format, quality, antiAlias, worldFile, cmyk);
                 Console.WriteLine("Successfully converted '{0}' to '{1}' at {2} DPI.", sourceFile, destFile, dpi);
                 return 0;
             }
@@ -116,20 +164,33 @@ namespace PurplePen.MapConverter
         /// </summary>
         static void PrintUsage()
         {
-            Console.Error.WriteLine("Usage: MapConverter [--dpi <dpi>] <source_map> <destination_png>");
+            Console.Error.WriteLine("Usage: MapConverter [options] <source_map> <destination_image>");
             Console.Error.WriteLine();
-            Console.Error.WriteLine("  --dpi <dpi>       Output resolution in dots per inch (default: 200)");
-            Console.Error.WriteLine("  <source_map>      Input map file (.ocd or .omap)");
-            Console.Error.WriteLine("  <destination_png>  Output PNG file path");
+            Console.Error.WriteLine("Options:");
+            Console.Error.WriteLine("  --dpi <dpi>         Output resolution in dots per inch (default: 200)");
+            Console.Error.WriteLine("  --format <fmt>      Output format: png, jpg, gif (default: from file extension)");
+            Console.Error.WriteLine("  --quality <1-100>   Image quality for JPEG output (default: 80)");
+            Console.Error.WriteLine("  --no-anti-alias     Disable anti-aliasing");
+            Console.Error.WriteLine("  --world-file        Create a world file for georeferencing");
+            Console.Error.WriteLine("  --cmyk              Use CMYK color mode with overprint blending");
+            Console.Error.WriteLine();
+            Console.Error.WriteLine("Arguments:");
+            Console.Error.WriteLine("  <source_map>        Input map file (.ocd or .omap)");
+            Console.Error.WriteLine("  <destination_image>  Output image file path");
         }
 
         /// <summary>
-        /// Converts a map file to a PNG image using the Skia rendering backend.
+        /// Converts a map file to an image using the Skia rendering backend.
         /// </summary>
         /// <param name="sourceFile">Path to the source map file (.ocd or .omap).</param>
-        /// <param name="destFile">Path to the output PNG file.</param>
+        /// <param name="destFile">Path to the output image file.</param>
         /// <param name="dpi">Resolution in dots per inch.</param>
-        static void ConvertMapToPng(string sourceFile, string destFile, float dpi)
+        /// <param name="format">Output format: "png", "jpg", or "gif".</param>
+        /// <param name="quality">Image quality for JPEG output (1-100).</param>
+        /// <param name="antiAlias">Whether to enable anti-aliasing.</param>
+        /// <param name="worldFile">Whether to create a world file for georeferencing.</param>
+        /// <param name="cmyk">Whether to use CMYK color mode with overprint blending.</param>
+        static void ConvertMap(string sourceFile, string destFile, float dpi, string format, int quality, bool antiAlias, bool worldFile, bool cmyk)
         {
             string sourceDir = Path.GetDirectoryName(Path.GetFullPath(sourceFile));
 
@@ -157,23 +218,146 @@ namespace PurplePen.MapConverter
             renderOptions.usePatternBitmaps = true;
             renderOptions.renderTemplates = RenderTemplateOption.MapAndTemplates;
             renderOptions.minResolution = mapBounds.Width / (float)pixelWidth;
+            renderOptions.blendOverprintedColors = cmyk;
 
             // Render the map to a bitmap using the Skia backend.
             CmykColor white = CmykColor.FromCmyk(0, 0, 0, 0);
             using (Skia_BitmapGraphicsTarget grTarget = new Skia_BitmapGraphicsTarget(pixelWidth, pixelHeight, false, white, mapBounds, true)) {
-                grTarget.PushAntiAliasing(true);
+                grTarget.PushAntiAliasing(antiAlias);
 
                 using (map.Read()) {
                     map.Draw(grTarget, mapBounds, renderOptions, null);
                 }
 
                 using (Skia_Bitmap skiaBitmap = (Skia_Bitmap)grTarget.FinishBitmap()) {
-                    // Write the bitmap to a PNG file.
+                    WriteImage(skiaBitmap, destFile, format, quality);
+                }
+            }
+
+            // Create world file if requested and the map has real-world coordinates.
+            if (worldFile) {
+                CreateWorldFile(map, destFile, mapBounds, pixelWidth, pixelHeight);
+            }
+        }
+
+        /// <summary>
+        /// Writes a Skia bitmap to an image file in the specified format.
+        /// </summary>
+        /// <param name="skiaBitmap">The rendered bitmap.</param>
+        /// <param name="destFile">Output file path.</param>
+        /// <param name="format">Image format: "png", "jpg", or "gif".</param>
+        /// <param name="quality">Encoding quality (1-100), used for JPEG.</param>
+        static void WriteImage(Skia_Bitmap skiaBitmap, string destFile, string format, int quality)
+        {
+            SKEncodedImageFormat skFormat;
+            switch (format) {
+                case "jpg":
+                    skFormat = SKEncodedImageFormat.Jpeg;
+                    break;
+                case "gif":
+                    skFormat = SKEncodedImageFormat.Gif;
+                    break;
+                default:
+                    skFormat = SKEncodedImageFormat.Png;
+                    break;
+            }
+
+            SKBitmap bitmap = skiaBitmap.Bitmap;
+            using (SKImage image = SKImage.FromBitmap(bitmap)) {
+                using (SKData data = image.Encode(skFormat, quality)) {
+                    if (data == null) {
+                        throw new InvalidOperationException(
+                            string.Format("Failed to encode image as {0}. This format may not be supported on this platform.", format));
+                    }
                     using (FileStream stream = new FileStream(destFile, FileMode.Create, FileAccess.Write)) {
-                        skiaBitmap.WritePngToStream(0, 0, skiaBitmap.PixelWidth, skiaBitmap.PixelHeight, stream);
+                        data.SaveTo(stream);
                     }
                 }
             }
+        }
+
+        /// <summary>
+        /// Creates a world file for georeferencing, using the map's real-world coordinates.
+        /// The world file contains six parameters that define the affine transformation
+        /// from pixel coordinates to real-world coordinates.
+        /// See https://en.wikipedia.org/wiki/World_file
+        /// </summary>
+        /// <param name="map">The loaded map with coordinate information.</param>
+        /// <param name="imageFile">Path to the output image file (world file is created alongside).</param>
+        /// <param name="mapBounds">The map area that was rendered.</param>
+        /// <param name="pixelWidth">Width of the rendered image in pixels.</param>
+        /// <param name="pixelHeight">Height of the rendered image in pixels.</param>
+        static void CreateWorldFile(Map map, string imageFile, RectangleF mapBounds, int pixelWidth, int pixelHeight)
+        {
+            RealWorldCoords realWorldCoords;
+            float mapScale;
+            using (map.Read()) {
+                realWorldCoords = map.RealWorldCoords;
+                mapScale = map.MapScale;
+            }
+
+            if (!realWorldCoords.RealWorldOn &&
+                realWorldCoords.RealWorldAngle == 0 &&
+                realWorldCoords.RealWorldOffsetX == 0 &&
+                realWorldCoords.RealWorldOffsetY == 0) {
+                Console.Error.WriteLine("Warning: Map has no real-world coordinates. World file not created.");
+                return;
+            }
+
+            // Compute the world file extension based on the image file extension.
+            string imageExtension = Path.GetExtension(imageFile);
+            string worldExtension;
+            if (imageExtension.Length == 4) {
+                // Standard convention: first char, last char, then 'w'. E.g. .png -> .pgw, .jpg -> .jgw
+                worldExtension = "." + imageExtension[1] + imageExtension[3] + "w";
+            }
+            else {
+                worldExtension = imageExtension + "w";
+            }
+            string worldFileName = Path.ChangeExtension(imageFile, worldExtension);
+
+            // Compute transformation from pixel coords to map coords using the rectangle transform.
+            Matrix transform = Geometry.CreateInvertedRectangleTransform(
+                new RectangleF(0, 0, pixelWidth, pixelHeight), mapBounds);
+
+            PointF[] transformedPoints = Geometry.TransformPoints(
+                new PointF[] { new PointF(0, 0), new PointF(1, 0), new PointF(0, 1) }, transform);
+
+            // Convert map coords to real-world coords.
+            double gridScaleFactor = realWorldCoords.GridScaleFactor;
+            double scaleFactor = gridScaleFactor * mapScale / 1000.0;
+            double angRad = (-realWorldCoords.RealWorldAngle * Math.PI) / 180.0;
+
+            double[] realX = new double[3];
+            double[] realY = new double[3];
+            for (int idx = 0; idx < 3; idx++) {
+                double x = transformedPoints[idx].X * scaleFactor;
+                double y = transformedPoints[idx].Y * scaleFactor;
+                realX[idx] = x * Math.Cos(angRad) - y * Math.Sin(angRad) + realWorldCoords.RealWorldOffsetX - realWorldCoords.RealWorldLocalOffsetX;
+                realY[idx] = x * Math.Sin(angRad) + y * Math.Cos(angRad) + realWorldCoords.RealWorldOffsetY - realWorldCoords.RealWorldLocalOffsetY;
+            }
+
+            // World file format: a, d, b, e, c, f
+            // where (c,f) is the real-world coord of pixel (0,0),
+            // (a,d) is the change per pixel moving right,
+            // (b,e) is the change per pixel moving down.
+            double a = realX[1] - realX[0];
+            double d = realY[1] - realY[0];
+            double b = realX[2] - realX[0];
+            double e = realY[2] - realY[0];
+            double c = realX[0];
+            double f = realY[0];
+
+            using (TextWriter writer = new StreamWriter(worldFileName)) {
+                writer.WriteLine(a.ToString("F10", CultureInfo.InvariantCulture));
+                writer.WriteLine(d.ToString("F10", CultureInfo.InvariantCulture));
+                writer.WriteLine(b.ToString("F10", CultureInfo.InvariantCulture));
+                writer.WriteLine(e.ToString("F10", CultureInfo.InvariantCulture));
+                writer.WriteLine(c.ToString("F5", CultureInfo.InvariantCulture));
+                writer.WriteLine(f.ToString("F5", CultureInfo.InvariantCulture));
+            }
+
+            Console.WriteLine("Created world file '{0}'.", worldFileName);
         }
     }
 }
