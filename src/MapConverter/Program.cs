@@ -468,7 +468,7 @@ namespace PurplePen.MapConverter
         /// <summary>
         /// Creates a KMZ file containing the map image as a single (non-tiled) ground overlay.
         /// The KMZ is a ZIP archive containing a doc.kml and the map image.
-        /// Uses gx:LatLonQuad for precise corner placement without rotation approximation.
+        /// Uses LatLonBox with rotation for positioning the image on the globe.
         /// Requires the map to have a known projection for coordinate conversion to WGS84.
         /// </summary>
         /// <param name="map">The loaded map with coordinate information.</param>
@@ -516,6 +516,49 @@ namespace PurplePen.MapConverter
             PaperToLatLon(new PointF(mapBounds.Left, mapBounds.Top), realWorldCoords, mapScale, sourceProj, wgs84Proj, out latSW, out lonSW);
             PaperToLatLon(new PointF(mapBounds.Right, mapBounds.Top), realWorldCoords, mapScale, sourceProj, wgs84Proj, out latSE, out lonSE);
 
+            // Compute the center of the image in lat/lon.
+            double centerLat = (latNW + latNE + latSW + latSE) / 4.0;
+            double centerLon = (lonNW + lonNE + lonSW + lonSE) / 4.0;
+
+            // Compute the bearing of the image's "up" direction (bottom-center to top-center)
+            // relative to true north. Scale longitude by cos(latitude) for metric distances.
+            double midTopLat = (latNW + latNE) / 2.0;
+            double midTopLon = (lonNW + lonNE) / 2.0;
+            double midBotLat = (latSW + latSE) / 2.0;
+            double midBotLon = (lonSW + lonSE) / 2.0;
+            double cosCenter = Math.Cos(centerLat * Math.PI / 180.0);
+            double dlat = midTopLat - midBotLat;
+            double dlon = (midTopLon - midBotLon) * cosCenter;
+
+            // Bearing from north, clockwise positive (radians).
+            double bearingCW = Math.Atan2(dlon, dlat);
+
+            // KML rotation is counterclockwise positive.
+            double kmlRotation = -bearingCW * 180.0 / Math.PI;
+
+            // Un-rotate the corners around the center by the bearing to compute the
+            // axis-aligned bounding box that LatLonBox needs before rotation is applied.
+            double cosB = Math.Cos(bearingCW);
+            double sinB = Math.Sin(bearingCW);
+            double[] lats = { latNW, latNE, latSW, latSE };
+            double[] lons = { lonNW, lonNE, lonSW, lonSE };
+            double[] unrotatedLats = new double[4];
+            double[] unrotatedLons = new double[4];
+            for (int j = 0; j < 4; j++) {
+                double dy = lats[j] - centerLat;
+                double dx = (lons[j] - centerLon) * cosCenter;
+                // Rotate counterclockwise by bearingCW to undo the clockwise rotation.
+                double newDy = dx * sinB + dy * cosB;
+                double newDx = dx * cosB - dy * sinB;
+                unrotatedLats[j] = centerLat + newDy;
+                unrotatedLons[j] = centerLon + newDx / cosCenter;
+            }
+
+            double north = Math.Max(Math.Max(unrotatedLats[0], unrotatedLats[1]), Math.Max(unrotatedLats[2], unrotatedLats[3]));
+            double south = Math.Min(Math.Min(unrotatedLats[0], unrotatedLats[1]), Math.Min(unrotatedLats[2], unrotatedLats[3]));
+            double east = Math.Max(Math.Max(unrotatedLons[0], unrotatedLons[1]), Math.Max(unrotatedLons[2], unrotatedLons[3]));
+            double west = Math.Min(Math.Min(unrotatedLons[0], unrotatedLons[1]), Math.Min(unrotatedLons[2], unrotatedLons[3]));
+
             // Determine the image file name inside the KMZ.
             string imageExtension;
             switch (format) {
@@ -536,10 +579,7 @@ namespace PurplePen.MapConverter
 
             string mapName = Path.GetFileNameWithoutExtension(destFile);
 
-            // Create the KML content using gx:LatLonQuad for precise corner placement.
-            // LatLonQuad specifies exact coordinates for each image corner, avoiding the
-            // rotation approximation issues of LatLonBox.
-            // Coordinate order: lower-left, lower-right, upper-right, upper-left (counterclockwise).
+            // Create the KML content using LatLonBox with rotation.
             byte[] kmlBytes;
             using (MemoryStream ms = new MemoryStream()) {
                 XmlWriterSettings xmlSettings = new XmlWriterSettings();
@@ -549,21 +589,18 @@ namespace PurplePen.MapConverter
                 using (XmlWriter xml = XmlWriter.Create(ms, xmlSettings)) {
                     xml.WriteStartDocument();
                     xml.WriteStartElement("kml", "http://www.opengis.net/kml/2.2");
-                    xml.WriteAttributeString("xmlns", "gx", null, "http://www.google.com/kml/ext/2.2");
                     xml.WriteStartElement("GroundOverlay");
                     xml.WriteElementString("name", mapName);
                     xml.WriteStartElement("Icon");
                     xml.WriteElementString("href", imageFileName);
                     xml.WriteEndElement(); // Icon
-
-                    // gx:LatLonQuad corners: SW, SE, NE, NW (counterclockwise from lower-left)
-                    string coords = string.Format(CultureInfo.InvariantCulture,
-                        "{0:F10},{1:F10},0 {2:F10},{3:F10},0 {4:F10},{5:F10},0 {6:F10},{7:F10},0",
-                        lonSW, latSW, lonSE, latSE, lonNE, latNE, lonNW, latNW);
-                    xml.WriteStartElement("LatLonQuad", "http://www.google.com/kml/ext/2.2");
-                    xml.WriteElementString("coordinates", coords);
-                    xml.WriteEndElement(); // gx:LatLonQuad
-
+                    xml.WriteStartElement("LatLonBox");
+                    xml.WriteElementString("north", north.ToString("F10", CultureInfo.InvariantCulture));
+                    xml.WriteElementString("south", south.ToString("F10", CultureInfo.InvariantCulture));
+                    xml.WriteElementString("east", east.ToString("F10", CultureInfo.InvariantCulture));
+                    xml.WriteElementString("west", west.ToString("F10", CultureInfo.InvariantCulture));
+                    xml.WriteElementString("rotation", kmlRotation.ToString("F6", CultureInfo.InvariantCulture));
+                    xml.WriteEndElement(); // LatLonBox
                     xml.WriteEndElement(); // GroundOverlay
                     xml.WriteEndElement(); // kml
                     xml.WriteEndDocument();
