@@ -36,6 +36,7 @@ using System;
 using System.Drawing;
 using System.Globalization;
 using System.IO;
+using DotSpatial.Projections;
 using PurplePen.Graphics2D;
 using PurplePen.MapModel;
 using SkiaSharp;
@@ -57,6 +58,7 @@ namespace PurplePen.MapConverter
             bool antiAlias = true;
             bool worldFile = false;
             bool cmyk = false;
+            int worldFileEpsg = 0;
             string format = null;
             string sourceFile = null;
             string destFile = null;
@@ -93,6 +95,14 @@ namespace PurplePen.MapConverter
                 else if (args[i] == "--world-file") {
                     worldFile = true;
                     i++;
+                }
+                else if (args[i] == "--world-file-epsg" && i + 1 < args.Length) {
+                    if (!int.TryParse(args[i + 1], out worldFileEpsg) || worldFileEpsg <= 0) {
+                        Console.Error.WriteLine("Error: Invalid EPSG code '{0}'.", args[i + 1]);
+                        return 1;
+                    }
+                    worldFile = true;
+                    i += 2;
                 }
                 else if (args[i] == "--cmyk") {
                     cmyk = true;
@@ -149,7 +159,7 @@ namespace PurplePen.MapConverter
             }
 
             try {
-                ConvertMap(sourceFile, destFile, dpi, format, quality, antiAlias, worldFile, cmyk);
+                ConvertMap(sourceFile, destFile, dpi, format, quality, antiAlias, worldFile, cmyk, worldFileEpsg);
                 Console.WriteLine("Successfully converted '{0}' to '{1}' at {2} DPI.", sourceFile, destFile, dpi);
                 return 0;
             }
@@ -172,6 +182,8 @@ namespace PurplePen.MapConverter
             Console.Error.WriteLine("  --quality <1-100>   Image quality for JPEG output (default: 80)");
             Console.Error.WriteLine("  --no-anti-alias     Disable anti-aliasing");
             Console.Error.WriteLine("  --world-file        Create a world file for georeferencing");
+            Console.Error.WriteLine("  --world-file-epsg <epsg>  Create a world file reprojected to the given EPSG");
+            Console.Error.WriteLine("                      (e.g., 3857 for Web Mercator)");
             Console.Error.WriteLine("  --cmyk              Use CMYK color mode with overprint blending");
             Console.Error.WriteLine();
             Console.Error.WriteLine("Arguments:");
@@ -190,7 +202,8 @@ namespace PurplePen.MapConverter
         /// <param name="antiAlias">Whether to enable anti-aliasing.</param>
         /// <param name="worldFile">Whether to create a world file for georeferencing.</param>
         /// <param name="cmyk">Whether to use CMYK color mode with overprint blending.</param>
-        static void ConvertMap(string sourceFile, string destFile, float dpi, string format, int quality, bool antiAlias, bool worldFile, bool cmyk)
+        /// <param name="worldFileEpsg">EPSG code for world file reprojection (0 = use map's native CRS).</param>
+        static void ConvertMap(string sourceFile, string destFile, float dpi, string format, int quality, bool antiAlias, bool worldFile, bool cmyk, int worldFileEpsg)
         {
             string sourceDir = Path.GetDirectoryName(Path.GetFullPath(sourceFile));
 
@@ -236,7 +249,7 @@ namespace PurplePen.MapConverter
 
             // Create world file if requested and the map has real-world coordinates.
             if (worldFile) {
-                CreateWorldFile(map, destFile, mapBounds, pixelWidth, pixelHeight);
+                CreateWorldFile(map, destFile, mapBounds, pixelWidth, pixelHeight, worldFileEpsg);
             }
         }
 
@@ -287,7 +300,8 @@ namespace PurplePen.MapConverter
         /// <param name="mapBounds">The map area that was rendered.</param>
         /// <param name="pixelWidth">Width of the rendered image in pixels.</param>
         /// <param name="pixelHeight">Height of the rendered image in pixels.</param>
-        static void CreateWorldFile(Map map, string imageFile, RectangleF mapBounds, int pixelWidth, int pixelHeight)
+        /// <param name="targetEpsg">EPSG code for the target coordinate system (0 = use map's native CRS).</param>
+        static void CreateWorldFile(Map map, string imageFile, RectangleF mapBounds, int pixelWidth, int pixelHeight, int targetEpsg)
         {
             RealWorldCoords realWorldCoords;
             float mapScale;
@@ -338,6 +352,32 @@ namespace PurplePen.MapConverter
                 realY[idx] = x * Math.Sin(angRad) + y * Math.Cos(angRad) + realWorldCoords.RealWorldOffsetY - realWorldCoords.RealWorldLocalOffsetY;
             }
 
+            // If a target EPSG is specified, reproject the coordinates.
+            if (targetEpsg > 0) {
+                if (realWorldCoords.ProjectionType != MapProjectionType.Known) {
+                    Console.Error.WriteLine("Warning: Map projection is unknown. Cannot reproject to EPSG:{0}. World file not created.", targetEpsg);
+                    return;
+                }
+
+                string targetProj4 = PurplePen.MapModel.Projections.AuthorityCodeHandler.Instance["EPSG:" + targetEpsg.ToString()];
+                if (targetProj4 == null) {
+                    Console.Error.WriteLine("Warning: EPSG:{0} is not recognized. World file not created.", targetEpsg);
+                    return;
+                }
+
+                ProjectionInfo sourceProj = ProjectionInfo.FromProj4String(realWorldCoords.Proj4String);
+                ProjectionInfo destProj = ProjectionInfo.FromProj4String(targetProj4);
+
+                // Reproject the three reference points from the map's CRS to the target CRS.
+                for (int idx = 0; idx < 3; idx++) {
+                    double[] xy = { realX[idx], realY[idx] };
+                    double[] z = { 0 };
+                    Reproject.ReprojectPoints(xy, z, sourceProj, destProj, 0, 1);
+                    realX[idx] = xy[0];
+                    realY[idx] = xy[1];
+                }
+            }
+
             // World file format: a, d, b, e, c, f
             // where (c,f) is the real-world coord of pixel (0,0),
             // (a,d) is the change per pixel moving right,
@@ -358,7 +398,12 @@ namespace PurplePen.MapConverter
                 writer.WriteLine(f.ToString("F5", CultureInfo.InvariantCulture));
             }
 
-            Console.WriteLine("Created world file '{0}'.", worldFileName);
+            if (targetEpsg > 0) {
+                Console.WriteLine("Created world file '{0}' (EPSG:{1}).", worldFileName, targetEpsg);
+            }
+            else {
+                Console.WriteLine("Created world file '{0}'.", worldFileName);
+            }
         }
     }
 }

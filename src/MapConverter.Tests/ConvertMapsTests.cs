@@ -221,6 +221,50 @@ namespace MapConverter.Tests
         }
 
         [Test]
+        public void WorldFileWithEpsgReprojection()
+        {
+            string mapFile = Path.Combine(testFilesDir, "courseprinting", "LordHill_ver16_2024Jan_scaled.omap");
+            string outputFile = Path.Combine(tempDir, "lordhill_epsg3857.png");
+            string worldFile = Path.Combine(tempDir, "lordhill_epsg3857.pgw");
+
+            int returnValue = PurplePen.MapConverter.Program.Main(new string[] { "--world-file-epsg", "3857", mapFile, outputFile });
+
+            Assert.AreEqual(0, returnValue);
+            Assert.IsTrue(File.Exists(outputFile), "Output image should exist.");
+            Assert.IsTrue(File.Exists(worldFile), "World file should be created with EPSG reprojection.");
+
+            // World file should have 6 lines with valid numbers.
+            string[] lines = File.ReadAllLines(worldFile);
+            Assert.AreEqual(6, lines.Length, "World file should have 6 lines.");
+
+            double[] values = new double[6];
+            for (int j = 0; j < 6; j++) {
+                Assert.IsTrue(double.TryParse(lines[j], System.Globalization.NumberStyles.Float,
+                    System.Globalization.CultureInfo.InvariantCulture, out values[j]),
+                    "Each world file line should be a number.");
+            }
+
+            // EPSG:3857 Web Mercator coordinates should be large values (meters at global scale).
+            // X offset (line 5) should be large negative for western hemisphere locations.
+            Assert.Less(values[4], -1000000, "X coordinate should be large negative for western hemisphere in EPSG:3857.");
+            Assert.Greater(values[5], 1000000, "Y coordinate should be large positive in EPSG:3857.");
+        }
+
+        [Test]
+        public void WorldFileEpsgImpliesWorldFile()
+        {
+            // Using --world-file-epsg should imply --world-file (no need to pass both).
+            string mapFile = Path.Combine(testFilesDir, "courseprinting", "LordHill_ver16_2024Jan_scaled.omap");
+            string outputFile = Path.Combine(tempDir, "lordhill_epsg_implied.png");
+            string worldFile = Path.Combine(tempDir, "lordhill_epsg_implied.pgw");
+
+            int returnValue = PurplePen.MapConverter.Program.Main(new string[] { "--world-file-epsg", "3857", mapFile, outputFile });
+
+            Assert.AreEqual(0, returnValue);
+            Assert.IsTrue(File.Exists(worldFile), "World file should be created when --world-file-epsg is used.");
+        }
+
+        [Test]
         public void MissingSourceFileReturnsError()
         {
             int returnValue = PurplePen.MapConverter.Program.Main(new string[] { "nonexistent.ocd", Path.Combine(tempDir, "out.png") });
