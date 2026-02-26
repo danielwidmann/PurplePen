@@ -36,6 +36,9 @@ using System;
 using System.Drawing;
 using System.Globalization;
 using System.IO;
+using System.IO.Compression;
+using System.Text;
+using System.Xml;
 using DotSpatial.Projections;
 using PurplePen.Graphics2D;
 using PurplePen.MapModel;
@@ -58,6 +61,7 @@ namespace PurplePen.MapConverter
             bool antiAlias = true;
             bool worldFile = false;
             bool cmyk = false;
+            bool kmz = false;
             int worldFileEpsg = 0;
             string format = null;
             string sourceFile = null;
@@ -106,6 +110,10 @@ namespace PurplePen.MapConverter
                 }
                 else if (args[i] == "--cmyk") {
                     cmyk = true;
+                    i++;
+                }
+                else if (args[i] == "--kmz") {
+                    kmz = true;
                     i++;
                 }
                 else if (args[i].StartsWith("-")) {
@@ -158,8 +166,13 @@ namespace PurplePen.MapConverter
                 }
             }
 
+            // Auto-detect KMZ from the destination file extension.
+            if (!kmz && Path.GetExtension(destFile).ToLowerInvariant() == ".kmz") {
+                kmz = true;
+            }
+
             try {
-                ConvertMap(sourceFile, destFile, dpi, format, quality, antiAlias, worldFile, cmyk, worldFileEpsg);
+                ConvertMap(sourceFile, destFile, dpi, format, quality, antiAlias, worldFile, cmyk, worldFileEpsg, kmz);
                 Console.WriteLine("Successfully converted '{0}' to '{1}' at {2} DPI.", sourceFile, destFile, dpi);
                 return 0;
             }
@@ -185,6 +198,7 @@ namespace PurplePen.MapConverter
             Console.Error.WriteLine("  --world-file-epsg <epsg>  Create a world file reprojected to the given EPSG");
             Console.Error.WriteLine("                      (e.g., 3857 for Web Mercator)");
             Console.Error.WriteLine("  --cmyk              Use CMYK color mode with overprint blending");
+            Console.Error.WriteLine("  --kmz               Create a KMZ file with the map as a ground overlay");
             Console.Error.WriteLine();
             Console.Error.WriteLine("Arguments:");
             Console.Error.WriteLine("  <source_map>        Input map file (.ocd or .omap)");
@@ -203,7 +217,8 @@ namespace PurplePen.MapConverter
         /// <param name="worldFile">Whether to create a world file for georeferencing.</param>
         /// <param name="cmyk">Whether to use CMYK color mode with overprint blending.</param>
         /// <param name="worldFileEpsg">EPSG code for world file reprojection (0 = use map's native CRS).</param>
-        static void ConvertMap(string sourceFile, string destFile, float dpi, string format, int quality, bool antiAlias, bool worldFile, bool cmyk, int worldFileEpsg)
+        /// <param name="kmz">Whether to create a KMZ file with the map as a ground overlay.</param>
+        static void ConvertMap(string sourceFile, string destFile, float dpi, string format, int quality, bool antiAlias, bool worldFile, bool cmyk, int worldFileEpsg, bool kmz)
         {
             string sourceDir = Path.GetDirectoryName(Path.GetFullPath(sourceFile));
 
@@ -235,6 +250,7 @@ namespace PurplePen.MapConverter
 
             // Render the map to a bitmap using the Skia backend.
             CmykColor white = CmykColor.FromCmyk(0, 0, 0, 0);
+            byte[] imageBytes = null;
             using (Skia_BitmapGraphicsTarget grTarget = new Skia_BitmapGraphicsTarget(pixelWidth, pixelHeight, false, white, mapBounds, true)) {
                 grTarget.PushAntiAliasing(antiAlias);
 
@@ -243,7 +259,16 @@ namespace PurplePen.MapConverter
                 }
 
                 using (Skia_Bitmap skiaBitmap = (Skia_Bitmap)grTarget.FinishBitmap()) {
-                    WriteImage(skiaBitmap, destFile, format, quality);
+                    imageBytes = EncodeImage(skiaBitmap, format, quality);
+
+                    // If the output is a .kmz file, don't write the raw image to the .kmz path;
+                    // the KMZ creation below will handle the output file.
+                    bool destIsKmz = Path.GetExtension(destFile).ToLowerInvariant() == ".kmz";
+                    if (!destIsKmz) {
+                        using (FileStream stream = new FileStream(destFile, FileMode.Create, FileAccess.Write)) {
+                            stream.Write(imageBytes, 0, imageBytes.Length);
+                        }
+                    }
                 }
             }
 
@@ -251,16 +276,21 @@ namespace PurplePen.MapConverter
             if (worldFile) {
                 CreateWorldFile(map, destFile, mapBounds, pixelWidth, pixelHeight, worldFileEpsg);
             }
+
+            // Create KMZ file if requested.
+            if (kmz) {
+                CreateKmzFile(map, destFile, mapBounds, imageBytes, format);
+            }
         }
 
         /// <summary>
-        /// Writes a Skia bitmap to an image file in the specified format.
+        /// Encodes a Skia bitmap to a byte array in the specified format.
         /// </summary>
         /// <param name="skiaBitmap">The rendered bitmap.</param>
-        /// <param name="destFile">Output file path.</param>
         /// <param name="format">Image format: "png", "jpg", or "gif".</param>
         /// <param name="quality">Encoding quality (1-100), used for JPEG.</param>
-        static void WriteImage(Skia_Bitmap skiaBitmap, string destFile, string format, int quality)
+        /// <returns>The encoded image data as a byte array.</returns>
+        static byte[] EncodeImage(Skia_Bitmap skiaBitmap, string format, int quality)
         {
             SKEncodedImageFormat skFormat;
             switch (format) {
@@ -282,9 +312,7 @@ namespace PurplePen.MapConverter
                         throw new InvalidOperationException(
                             string.Format("Failed to encode image as {0}. This format may not be supported on this platform.", format));
                     }
-                    using (FileStream stream = new FileStream(destFile, FileMode.Create, FileAccess.Write)) {
-                        data.SaveTo(stream);
-                    }
+                    return data.ToArray();
                 }
             }
         }
@@ -405,6 +433,164 @@ namespace PurplePen.MapConverter
             else {
                 Console.WriteLine("Created world file '{0}'.", worldFileName);
             }
+        }
+
+        /// <summary>
+        /// Converts a paper coordinate (in mm) to WGS84 latitude/longitude using the map's
+        /// real-world coordinates and projection.
+        /// </summary>
+        /// <param name="paperCoord">The paper coordinate in mm.</param>
+        /// <param name="realWorldCoords">The map's real-world coordinate settings.</param>
+        /// <param name="mapScale">The map scale.</param>
+        /// <param name="sourceProj">The source projection info.</param>
+        /// <param name="wgs84Proj">The WGS84 projection info.</param>
+        /// <param name="latitude">Output latitude in degrees.</param>
+        /// <param name="longitude">Output longitude in degrees.</param>
+        static void PaperToLatLon(PointF paperCoord, RealWorldCoords realWorldCoords, float mapScale,
+            ProjectionInfo sourceProj, ProjectionInfo wgs84Proj, out double latitude, out double longitude)
+        {
+            double gridScaleFactor = realWorldCoords.GridScaleFactor;
+            double scaleFactor = gridScaleFactor * mapScale / 1000.0;
+            double angRad = (-realWorldCoords.RealWorldAngle * Math.PI) / 180.0;
+
+            double x = paperCoord.X * scaleFactor;
+            double y = paperCoord.Y * scaleFactor;
+            double realX = x * Math.Cos(angRad) - y * Math.Sin(angRad) + realWorldCoords.RealWorldOffsetX - realWorldCoords.RealWorldLocalOffsetX;
+            double realY = x * Math.Sin(angRad) + y * Math.Cos(angRad) + realWorldCoords.RealWorldOffsetY - realWorldCoords.RealWorldLocalOffsetY;
+
+            double[] xy = { realX, realY };
+            double[] z = { 0 };
+            Reproject.ReprojectPoints(xy, z, sourceProj, wgs84Proj, 0, 1);
+            longitude = xy[0];
+            latitude = xy[1];
+        }
+
+        /// <summary>
+        /// Creates a KMZ file containing the map image as a single (non-tiled) ground overlay.
+        /// The KMZ is a ZIP archive containing a doc.kml and the map image.
+        /// Requires the map to have a known projection for coordinate conversion to WGS84.
+        /// </summary>
+        /// <param name="map">The loaded map with coordinate information.</param>
+        /// <param name="destFile">Path to the output image file (KMZ is created alongside or as the output).</param>
+        /// <param name="mapBounds">The map area that was rendered.</param>
+        /// <param name="imageBytes">The encoded image data.</param>
+        /// <param name="format">The image format ("png", "jpg", or "gif").</param>
+        static void CreateKmzFile(Map map, string destFile, RectangleF mapBounds, byte[] imageBytes, string format)
+        {
+            RealWorldCoords realWorldCoords;
+            float mapScale;
+            using (map.Read()) {
+                realWorldCoords = map.RealWorldCoords;
+                mapScale = map.MapScale;
+            }
+
+            if (!realWorldCoords.RealWorldOn &&
+                realWorldCoords.RealWorldAngle == 0 &&
+                realWorldCoords.RealWorldOffsetX == 0 &&
+                realWorldCoords.RealWorldOffsetY == 0) {
+                Console.Error.WriteLine("Warning: Map has no real-world coordinates. KMZ file not created.");
+                return;
+            }
+
+            if (realWorldCoords.ProjectionType != MapProjectionType.Known) {
+                Console.Error.WriteLine("Warning: Map projection is unknown. Cannot create KMZ file.");
+                return;
+            }
+
+            ProjectionInfo sourceProj = ProjectionInfo.FromProj4String(realWorldCoords.Proj4String);
+            ProjectionInfo wgs84Proj = ProjectionInfo.FromProj4String("+proj=longlat +ellps=WGS84 +datum=WGS84 +no_defs");
+
+            // Convert the four corners of the map bounds to lat/lon.
+            double lat0, lon0, lat1, lon1, lat2, lon2, lat3, lon3;
+            PointF topLeft = new PointF(mapBounds.Left, mapBounds.Top);
+            PointF topRight = new PointF(mapBounds.Right, mapBounds.Top);
+            PointF bottomLeft = new PointF(mapBounds.Left, mapBounds.Bottom);
+            PointF bottomRight = new PointF(mapBounds.Right, mapBounds.Bottom);
+
+            PaperToLatLon(topLeft, realWorldCoords, mapScale, sourceProj, wgs84Proj, out lat0, out lon0);
+            PaperToLatLon(topRight, realWorldCoords, mapScale, sourceProj, wgs84Proj, out lat1, out lon1);
+            PaperToLatLon(bottomLeft, realWorldCoords, mapScale, sourceProj, wgs84Proj, out lat2, out lon2);
+            PaperToLatLon(bottomRight, realWorldCoords, mapScale, sourceProj, wgs84Proj, out lat3, out lon3);
+
+            // Compute the bounding box in WGS84.
+            double north = Math.Max(Math.Max(lat0, lat1), Math.Max(lat2, lat3));
+            double south = Math.Min(Math.Min(lat0, lat1), Math.Min(lat2, lat3));
+            double east = Math.Max(Math.Max(lon0, lon1), Math.Max(lon2, lon3));
+            double west = Math.Min(Math.Min(lon0, lon1), Math.Min(lon2, lon3));
+
+            // Compute the rotation angle of the map image relative to north.
+            // The rotation is the angle of the map's north direction relative to true north,
+            // measured at the center of the image. We approximate by computing the bearing
+            // of the top edge's midpoint from the bottom edge's midpoint.
+            double midTopLat = (lat0 + lat1) / 2.0;
+            double midTopLon = (lon0 + lon1) / 2.0;
+            double midBotLat = (lat2 + lat3) / 2.0;
+            double midBotLon = (lon2 + lon3) / 2.0;
+            double rotation = Math.Atan2(midTopLon - midBotLon, midTopLat - midBotLat) * 180.0 / Math.PI;
+
+            // Determine the image file name inside the KMZ.
+            string imageExtension = (format == "jpg") ? ".jpg" : (format == "gif") ? ".gif" : ".png";
+            string imageFileName = "map" + imageExtension;
+
+            // Determine the KMZ file path.
+            string kmzFile;
+            if (Path.GetExtension(destFile).ToLowerInvariant() == ".kmz") {
+                kmzFile = destFile;
+            }
+            else {
+                kmzFile = Path.ChangeExtension(destFile, ".kmz");
+            }
+
+            string mapName = Path.GetFileNameWithoutExtension(destFile);
+
+            // Create the KML content.
+            byte[] kmlBytes;
+            using (MemoryStream ms = new MemoryStream()) {
+                XmlWriterSettings xmlSettings = new XmlWriterSettings();
+                xmlSettings.Indent = true;
+                xmlSettings.Encoding = new UTF8Encoding(false);
+
+                using (XmlWriter xml = XmlWriter.Create(ms, xmlSettings)) {
+                    xml.WriteStartDocument();
+                    xml.WriteStartElement("kml", "http://www.opengis.net/kml/2.2");
+                    xml.WriteStartElement("GroundOverlay");
+                    xml.WriteElementString("name", mapName);
+                    xml.WriteStartElement("Icon");
+                    xml.WriteElementString("href", imageFileName);
+                    xml.WriteEndElement(); // Icon
+                    xml.WriteStartElement("LatLonBox");
+                    xml.WriteElementString("north", north.ToString("F10", CultureInfo.InvariantCulture));
+                    xml.WriteElementString("south", south.ToString("F10", CultureInfo.InvariantCulture));
+                    xml.WriteElementString("east", east.ToString("F10", CultureInfo.InvariantCulture));
+                    xml.WriteElementString("west", west.ToString("F10", CultureInfo.InvariantCulture));
+                    xml.WriteElementString("rotation", rotation.ToString("F6", CultureInfo.InvariantCulture));
+                    xml.WriteEndElement(); // LatLonBox
+                    xml.WriteEndElement(); // GroundOverlay
+                    xml.WriteEndElement(); // kml
+                    xml.WriteEndDocument();
+                }
+
+                kmlBytes = ms.ToArray();
+            }
+
+            // Create the KMZ file (a ZIP archive containing doc.kml and the image).
+            using (FileStream fs = new FileStream(kmzFile, FileMode.Create, FileAccess.Write)) {
+                using (ZipArchive archive = new ZipArchive(fs, ZipArchiveMode.Create)) {
+                    // Add doc.kml
+                    ZipArchiveEntry kmlEntry = archive.CreateEntry("doc.kml");
+                    using (Stream entryStream = kmlEntry.Open()) {
+                        entryStream.Write(kmlBytes, 0, kmlBytes.Length);
+                    }
+
+                    // Add the image file.
+                    ZipArchiveEntry imageEntry = archive.CreateEntry(imageFileName);
+                    using (Stream entryStream = imageEntry.Open()) {
+                        entryStream.Write(imageBytes, 0, imageBytes.Length);
+                    }
+                }
+            }
+
+            Console.WriteLine("Created KMZ file '{0}'.", kmzFile);
         }
     }
 }

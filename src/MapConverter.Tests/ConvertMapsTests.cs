@@ -1,6 +1,9 @@
 using NUnit.Framework;
 using System;
+using System.Globalization;
 using System.IO;
+using System.IO.Compression;
+using System.Xml;
 using SkiaSharp;
 
 namespace MapConverter.Tests
@@ -262,6 +265,97 @@ namespace MapConverter.Tests
 
             Assert.AreEqual(0, returnValue);
             Assert.IsTrue(File.Exists(worldFile), "World file should be created when --world-file-epsg is used.");
+        }
+
+        [Test]
+        public void KmzCreatedForGeoreferencedMap()
+        {
+            string mapFile = Path.Combine(testFilesDir, "courseprinting", "LordHill_ver16_2024Jan_scaled.omap");
+            string outputFile = Path.Combine(tempDir, "lordhill_kmz.png");
+            string kmzFile = Path.Combine(tempDir, "lordhill_kmz.kmz");
+
+            int returnValue = PurplePen.MapConverter.Program.Main(new string[] { "--kmz", mapFile, outputFile });
+
+            Assert.AreEqual(0, returnValue);
+            Assert.IsTrue(File.Exists(outputFile), "Output image should exist.");
+            Assert.IsTrue(File.Exists(kmzFile), "KMZ file should be created alongside the image.");
+
+            // Verify the KMZ contains doc.kml and an image file.
+            using (ZipArchive archive = ZipFile.OpenRead(kmzFile)) {
+                Assert.AreEqual(2, archive.Entries.Count, "KMZ should contain exactly 2 files.");
+
+                ZipArchiveEntry kmlEntry = archive.GetEntry("doc.kml");
+                Assert.IsNotNull(kmlEntry, "KMZ should contain doc.kml.");
+
+                ZipArchiveEntry imageEntry = archive.GetEntry("map.png");
+                Assert.IsNotNull(imageEntry, "KMZ should contain map.png.");
+
+                // Verify doc.kml is valid XML with a GroundOverlay.
+                using (Stream kmlStream = kmlEntry.Open()) {
+                    XmlDocument doc = new XmlDocument();
+                    doc.Load(kmlStream);
+                    XmlNamespaceManager nsMgr = new XmlNamespaceManager(doc.NameTable);
+                    nsMgr.AddNamespace("k", "http://www.opengis.net/kml/2.2");
+                    XmlNode overlay = doc.SelectSingleNode("//k:GroundOverlay", nsMgr);
+                    Assert.IsNotNull(overlay, "KML should contain a GroundOverlay element.");
+
+                    XmlNode northNode = doc.SelectSingleNode("//k:LatLonBox/k:north", nsMgr);
+                    Assert.IsNotNull(northNode, "LatLonBox should have a north element.");
+                    double north = double.Parse(northNode.InnerText, CultureInfo.InvariantCulture);
+                    Assert.Greater(north, 40, "North latitude should be reasonable for Lord Hill map.");
+                    Assert.Less(north, 50, "North latitude should be reasonable for Lord Hill map.");
+                }
+            }
+        }
+
+        [Test]
+        public void KmzAutoDetectedFromExtension()
+        {
+            // When the output file is .kmz, the KMZ should be created automatically.
+            string mapFile = Path.Combine(testFilesDir, "courseprinting", "LordHill_ver16_2024Jan_scaled.omap");
+            string outputFile = Path.Combine(tempDir, "lordhill_autokmz.kmz");
+
+            int returnValue = PurplePen.MapConverter.Program.Main(new string[] { mapFile, outputFile });
+
+            Assert.AreEqual(0, returnValue);
+            Assert.IsTrue(File.Exists(outputFile), "KMZ output file should exist.");
+
+            // Verify it's a valid ZIP/KMZ file.
+            using (ZipArchive archive = ZipFile.OpenRead(outputFile)) {
+                Assert.IsNotNull(archive.GetEntry("doc.kml"), "Auto-detected KMZ should contain doc.kml.");
+                Assert.IsNotNull(archive.GetEntry("map.png"), "Auto-detected KMZ should contain map.png.");
+            }
+        }
+
+        [Test]
+        public void KmzNotCreatedForNonGeoreferencedMap()
+        {
+            string mapFile = Path.Combine(testFilesDir, "courseprinting", "marymoor.ocd");
+            string outputFile = Path.Combine(tempDir, "marymoor_nokmz.png");
+            string kmzFile = Path.Combine(tempDir, "marymoor_nokmz.kmz");
+
+            int returnValue = PurplePen.MapConverter.Program.Main(new string[] { "--kmz", mapFile, outputFile });
+
+            Assert.AreEqual(0, returnValue);
+            Assert.IsTrue(File.Exists(outputFile), "Output image should exist.");
+            Assert.IsFalse(File.Exists(kmzFile), "KMZ should NOT be created for non-georeferenced map.");
+        }
+
+        [Test]
+        public void KmzWithJpegFormat()
+        {
+            string mapFile = Path.Combine(testFilesDir, "courseprinting", "LordHill_ver16_2024Jan_scaled.omap");
+            string outputFile = Path.Combine(tempDir, "lordhill_kmzjpg.jpg");
+            string kmzFile = Path.Combine(tempDir, "lordhill_kmzjpg.kmz");
+
+            int returnValue = PurplePen.MapConverter.Program.Main(new string[] { "--kmz", "--format", "jpg", mapFile, outputFile });
+
+            Assert.AreEqual(0, returnValue);
+            Assert.IsTrue(File.Exists(kmzFile), "KMZ file should be created.");
+
+            using (ZipArchive archive = ZipFile.OpenRead(kmzFile)) {
+                Assert.IsNotNull(archive.GetEntry("map.jpg"), "KMZ with JPEG format should contain map.jpg.");
+            }
         }
 
         [Test]
