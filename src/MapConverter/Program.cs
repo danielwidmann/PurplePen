@@ -519,17 +519,25 @@ namespace PurplePen.MapConverter
             double west = Math.Min(Math.Min(lon0, lon1), Math.Min(lon2, lon3));
 
             // Compute the rotation angle of the map image relative to north.
-            // The rotation is the angle of the map's north direction relative to true north,
-            // measured at the center of the image. We approximate by computing the bearing
-            // of the top edge's midpoint from the bottom edge's midpoint.
+            // Scale longitude difference by cos(latitude) to account for the convergence of
+            // meridians, which gives a correct bearing at the map's latitude.
             double midTopLat = (lat0 + lat1) / 2.0;
             double midTopLon = (lon0 + lon1) / 2.0;
             double midBotLat = (lat2 + lat3) / 2.0;
             double midBotLon = (lon2 + lon3) / 2.0;
-            double rotation = Math.Atan2(midTopLon - midBotLon, midTopLat - midBotLat) * 180.0 / Math.PI;
+            double midLat = (midTopLat + midBotLat) / 2.0;
+            double cosLat = Math.Cos(midLat * Math.PI / 180.0);
+            double dLon = (midTopLon - midBotLon) * cosLat;
+            double dLat = midTopLat - midBotLat;
+            double rotation = Math.Atan2(dLon, dLat) * 180.0 / Math.PI;
 
             // Determine the image file name inside the KMZ.
-            string imageExtension = (format == "jpg") ? ".jpg" : (format == "gif") ? ".gif" : ".png";
+            string imageExtension;
+            switch (format) {
+                case "jpg": imageExtension = ".jpg"; break;
+                case "gif": imageExtension = ".gif"; break;
+                default:    imageExtension = ".png"; break;
+            }
             string imageFileName = "map" + imageExtension;
 
             // Determine the KMZ file path.
