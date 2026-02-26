@@ -290,20 +290,42 @@ namespace MapConverter.Tests
                 ZipArchiveEntry imageEntry = archive.GetEntry("map.png");
                 Assert.IsNotNull(imageEntry, "KMZ should contain map.png.");
 
-                // Verify doc.kml is valid XML with a GroundOverlay.
+                // Verify doc.kml is valid XML with a GroundOverlay and gx:LatLonQuad.
                 using (Stream kmlStream = kmlEntry.Open()) {
                     XmlDocument doc = new XmlDocument();
                     doc.Load(kmlStream);
                     XmlNamespaceManager nsMgr = new XmlNamespaceManager(doc.NameTable);
                     nsMgr.AddNamespace("k", "http://www.opengis.net/kml/2.2");
+                    nsMgr.AddNamespace("gx", "http://www.google.com/kml/ext/2.2");
                     XmlNode overlay = doc.SelectSingleNode("//k:GroundOverlay", nsMgr);
                     Assert.IsNotNull(overlay, "KML should contain a GroundOverlay element.");
 
-                    XmlNode northNode = doc.SelectSingleNode("//k:LatLonBox/k:north", nsMgr);
-                    Assert.IsNotNull(northNode, "LatLonBox should have a north element.");
-                    double north = double.Parse(northNode.InnerText, CultureInfo.InvariantCulture);
-                    Assert.Greater(north, 40, "North latitude should be reasonable for Lord Hill map.");
-                    Assert.Less(north, 50, "North latitude should be reasonable for Lord Hill map.");
+                    XmlNode quadNode = doc.SelectSingleNode("//gx:LatLonQuad/k:coordinates", nsMgr);
+                    Assert.IsNotNull(quadNode, "KML should contain a gx:LatLonQuad with coordinates.");
+
+                    // Parse the coordinates and verify they're reasonable for Lord Hill, WA (~47.84°N, ~122.05°W).
+                    string coordsText = quadNode.InnerText.Trim();
+                    string[] tuples = coordsText.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
+                    Assert.AreEqual(4, tuples.Length, "LatLonQuad should have 4 coordinate tuples.");
+
+                    // Check that all coordinates are in reasonable range for Lord Hill.
+                    foreach (string tuple in tuples) {
+                        string[] parts = tuple.Split(',');
+                        double lon = double.Parse(parts[0], CultureInfo.InvariantCulture);
+                        double lat = double.Parse(parts[1], CultureInfo.InvariantCulture);
+                        Assert.Greater(lat, 47.0, "Latitude should be reasonable for Lord Hill map.");
+                        Assert.Less(lat, 49.0, "Latitude should be reasonable for Lord Hill map.");
+                        Assert.Greater(lon, -123.0, "Longitude should be reasonable for Lord Hill map.");
+                        Assert.Less(lon, -121.0, "Longitude should be reasonable for Lord Hill map.");
+                    }
+
+                    // Verify correct orientation: the first tuple (SW/lower-left) should have
+                    // lower latitude than the fourth tuple (NW/upper-left).
+                    string[] swParts = tuples[0].Split(',');
+                    string[] nwParts = tuples[3].Split(',');
+                    double swLat = double.Parse(swParts[1], CultureInfo.InvariantCulture);
+                    double nwLat = double.Parse(nwParts[1], CultureInfo.InvariantCulture);
+                    Assert.Greater(nwLat, swLat, "NW corner should have higher latitude than SW corner.");
                 }
             }
         }

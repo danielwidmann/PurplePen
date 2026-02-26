@@ -468,6 +468,7 @@ namespace PurplePen.MapConverter
         /// <summary>
         /// Creates a KMZ file containing the map image as a single (non-tiled) ground overlay.
         /// The KMZ is a ZIP archive containing a doc.kml and the map image.
+        /// Uses gx:LatLonQuad for precise corner placement without rotation approximation.
         /// Requires the map to have a known projection for coordinate conversion to WGS84.
         /// </summary>
         /// <param name="map">The loaded map with coordinate information.</param>
@@ -500,36 +501,20 @@ namespace PurplePen.MapConverter
             ProjectionInfo sourceProj = ProjectionInfo.FromProj4String(realWorldCoords.Proj4String);
             ProjectionInfo wgs84Proj = ProjectionInfo.FromProj4String("+proj=longlat +ellps=WGS84 +datum=WGS84 +no_defs");
 
-            // Convert the four corners of the map bounds to lat/lon.
-            double lat0, lon0, lat1, lon1, lat2, lon2, lat3, lon3;
-            PointF topLeft = new PointF(mapBounds.Left, mapBounds.Top);
-            PointF topRight = new PointF(mapBounds.Right, mapBounds.Top);
-            PointF bottomLeft = new PointF(mapBounds.Left, mapBounds.Bottom);
-            PointF bottomRight = new PointF(mapBounds.Right, mapBounds.Bottom);
-
-            PaperToLatLon(topLeft, realWorldCoords, mapScale, sourceProj, wgs84Proj, out lat0, out lon0);
-            PaperToLatLon(topRight, realWorldCoords, mapScale, sourceProj, wgs84Proj, out lat1, out lon1);
-            PaperToLatLon(bottomLeft, realWorldCoords, mapScale, sourceProj, wgs84Proj, out lat2, out lon2);
-            PaperToLatLon(bottomRight, realWorldCoords, mapScale, sourceProj, wgs84Proj, out lat3, out lon3);
-
-            // Compute the bounding box in WGS84.
-            double north = Math.Max(Math.Max(lat0, lat1), Math.Max(lat2, lat3));
-            double south = Math.Min(Math.Min(lat0, lat1), Math.Min(lat2, lat3));
-            double east = Math.Max(Math.Max(lon0, lon1), Math.Max(lon2, lon3));
-            double west = Math.Min(Math.Min(lon0, lon1), Math.Min(lon2, lon3));
-
-            // Compute the rotation angle of the map image relative to north.
-            // Scale longitude difference by cos(latitude) to account for the convergence of
-            // meridians, which gives a correct bearing at the map's latitude.
-            double midTopLat = (lat0 + lat1) / 2.0;
-            double midTopLon = (lon0 + lon1) / 2.0;
-            double midBotLat = (lat2 + lat3) / 2.0;
-            double midBotLon = (lon2 + lon3) / 2.0;
-            double midLat = (midTopLat + midBotLat) / 2.0;
-            double cosLat = Math.Cos(midLat * Math.PI / 180.0);
-            double dLon = (midTopLon - midBotLon) * cosLat;
-            double dLat = midTopLat - midBotLat;
-            double rotation = Math.Atan2(dLon, dLat) * 180.0 / Math.PI;
+            // Map the four image corners to map paper coordinates.
+            // In map coordinates, Y increases upward. In RectangleF:
+            //   mapBounds.Top = minimum Y = southernmost
+            //   mapBounds.Bottom = maximum Y = northernmost
+            // The rendered image (inverted=true) maps pixel Y-down to map Y-up, so:
+            //   Image top-left    = NW = (mapBounds.Left,  mapBounds.Bottom)
+            //   Image top-right   = NE = (mapBounds.Right, mapBounds.Bottom)
+            //   Image bottom-left = SW = (mapBounds.Left,  mapBounds.Top)
+            //   Image bottom-right= SE = (mapBounds.Right, mapBounds.Top)
+            double latNW, lonNW, latNE, lonNE, latSW, lonSW, latSE, lonSE;
+            PaperToLatLon(new PointF(mapBounds.Left, mapBounds.Bottom), realWorldCoords, mapScale, sourceProj, wgs84Proj, out latNW, out lonNW);
+            PaperToLatLon(new PointF(mapBounds.Right, mapBounds.Bottom), realWorldCoords, mapScale, sourceProj, wgs84Proj, out latNE, out lonNE);
+            PaperToLatLon(new PointF(mapBounds.Left, mapBounds.Top), realWorldCoords, mapScale, sourceProj, wgs84Proj, out latSW, out lonSW);
+            PaperToLatLon(new PointF(mapBounds.Right, mapBounds.Top), realWorldCoords, mapScale, sourceProj, wgs84Proj, out latSE, out lonSE);
 
             // Determine the image file name inside the KMZ.
             string imageExtension;
@@ -551,7 +536,10 @@ namespace PurplePen.MapConverter
 
             string mapName = Path.GetFileNameWithoutExtension(destFile);
 
-            // Create the KML content.
+            // Create the KML content using gx:LatLonQuad for precise corner placement.
+            // LatLonQuad specifies exact coordinates for each image corner, avoiding the
+            // rotation approximation issues of LatLonBox.
+            // Coordinate order: lower-left, lower-right, upper-right, upper-left (counterclockwise).
             byte[] kmlBytes;
             using (MemoryStream ms = new MemoryStream()) {
                 XmlWriterSettings xmlSettings = new XmlWriterSettings();
@@ -561,18 +549,21 @@ namespace PurplePen.MapConverter
                 using (XmlWriter xml = XmlWriter.Create(ms, xmlSettings)) {
                     xml.WriteStartDocument();
                     xml.WriteStartElement("kml", "http://www.opengis.net/kml/2.2");
+                    xml.WriteAttributeString("xmlns", "gx", null, "http://www.google.com/kml/ext/2.2");
                     xml.WriteStartElement("GroundOverlay");
                     xml.WriteElementString("name", mapName);
                     xml.WriteStartElement("Icon");
                     xml.WriteElementString("href", imageFileName);
                     xml.WriteEndElement(); // Icon
-                    xml.WriteStartElement("LatLonBox");
-                    xml.WriteElementString("north", north.ToString("F10", CultureInfo.InvariantCulture));
-                    xml.WriteElementString("south", south.ToString("F10", CultureInfo.InvariantCulture));
-                    xml.WriteElementString("east", east.ToString("F10", CultureInfo.InvariantCulture));
-                    xml.WriteElementString("west", west.ToString("F10", CultureInfo.InvariantCulture));
-                    xml.WriteElementString("rotation", rotation.ToString("F6", CultureInfo.InvariantCulture));
-                    xml.WriteEndElement(); // LatLonBox
+
+                    // gx:LatLonQuad corners: SW, SE, NE, NW (counterclockwise from lower-left)
+                    string coords = string.Format(CultureInfo.InvariantCulture,
+                        "{0:F10},{1:F10},0 {2:F10},{3:F10},0 {4:F10},{5:F10},0 {6:F10},{7:F10},0",
+                        lonSW, latSW, lonSE, latSE, lonNE, latNE, lonNW, latNW);
+                    xml.WriteStartElement("LatLonQuad", "http://www.google.com/kml/ext/2.2");
+                    xml.WriteElementString("coordinates", coords);
+                    xml.WriteEndElement(); // gx:LatLonQuad
+
                     xml.WriteEndElement(); // GroundOverlay
                     xml.WriteEndElement(); // kml
                     xml.WriteEndDocument();
