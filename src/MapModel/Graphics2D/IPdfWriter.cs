@@ -35,6 +35,9 @@ namespace PurplePen.Graphics2D
         // and destinationInInches is a rectangle in the coordinate space of the new PDF page that specifies where to place the imported portion.
         IGraphicsTarget BeginCopiedPartialPage(string pdfImport, int pageImport, SizeF pageSizeInInches, RectangleF partialSourcePageInInches, RectangleF destinationInInches);
 
+        // Draw a partial page from an imported PDF onto the current page.
+        void DrawCopiedPartialPage(IGraphicsTarget target, string pdfImport, int pageImport, RectangleF partialSourcePageInInches, RectangleF destinationInInches);
+
         // Finish writing to the current page. After calling EndPage, the caller should dispose the IGraphicsTarget returned by BeginPage or BeginCopiedPage.
         void EndPage(IGraphicsTarget graphicsTarget);
 

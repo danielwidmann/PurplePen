@@ -188,6 +188,29 @@ namespace PurplePen.MapModel
             }
         }
 
+        public void DrawCopiedPartialPage(IGraphicsTarget target, string importedPdfPath, int pageNumber, RectangleF partialSourcePageInInches, RectangleF destinationCropInInches)
+        {
+            using (PdfImporter pdfImporter = new PdfImporter(importedPdfPath))
+            using (XForm xformToCopy = pdfImporter.GetXForm(pageNumber)) {
+                PdfPage pageToCopy = pdfImporter.GetPage(pageNumber);
+                PointF cropBoxOriginInPoints = CropboxOriginInPoints(pageToCopy);
+
+                RectangleF destRect = new RectangleF(destinationCropInInches.Left * 100, destinationCropInInches.Top * 100,
+                                                     destinationCropInInches.Width * 100, destinationCropInInches.Height * 100);
+                RectangleF srcRect = new RectangleF(partialSourcePageInInches.Left * 100, partialSourcePageInInches.Top * 100,
+                                                    partialSourcePageInInches.Width * 100, partialSourcePageInInches.Height * 100);
+                srcRect.Offset(cropBoxOriginInPoints.X / 72 * 100, cropBoxOriginInPoints.Y / 72 * 100);
+                Matrix transform = Geometry.CreateRectangleTransform(srcRect, destRect);
+
+                target.PushClip(destRect);
+                target.PushTransform(transform);
+                ((Pdf_GraphicsTarget)target).XGraphics.DrawImage(xformToCopy,
+                    new XRect(0, 0, xformToCopy.PointWidth / 72F * 100F, xformToCopy.PointHeight / 72F * 100F));
+                target.PopTransform();
+                target.PopClip();
+            }
+        }
+
         private PointF CropboxOriginInPoints(PdfPage pageToCopy)
         {
             PdfRectangle cropRect = pageToCopy.CropBox;

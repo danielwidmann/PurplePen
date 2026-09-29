@@ -62,6 +62,19 @@ namespace PurplePen
         private string sourcePdfMapFileName;
         private int totalPages, currentPage;
 
+        private class CoursePagePlacement
+        {
+            public CoursePage Page;
+            public float OffsetX;
+            public float OffsetY;
+        }
+
+        private class OutputPdfPage
+        {
+            public SizeF PaperSize;
+            public List<CoursePagePlacement> CoursePages = new List<CoursePagePlacement>();
+        }
+
         // mapDisplay is a MapDisplay that contains the correct map. All other features of the map display need to be customized.
         public CoursePdf(EventDB eventDB, SymbolDB symbolDB, Controller controller, MapDisplay mapDisplay, 
                          CoursePdfSettings coursePdfSettings, CourseAppearance appearance)
@@ -115,7 +128,7 @@ namespace PurplePen
 
             totalPages = 0;
             foreach (var pair in fileList) {
-                totalPages += LayoutPages(pair.Second).Count;
+                totalPages += LayoutOutputPages(pair.Second).Count;
             }
 
             if (coursePdfSettings.ShowProgressDialog)
@@ -148,6 +161,12 @@ namespace PurplePen
             switch (coursePdfSettings.FileCreation) {
                 case CoursePdfSettings.PdfFileCreation.SingleFile:
                     // All pages go into a single file.
+                    fileList.Add(new Pair<string, IEnumerable<CourseDesignator>>(CreateOutputFileName(null),
+                                 QueryEvent.EnumerateCourseDesignators(eventDB, coursePdfSettings.CourseIds, coursePdfSettings.VariationChoicesPerCourse, !coursePdfSettings.PrintMapExchangesOnOneMap)));
+                    break;
+
+                case CoursePdfSettings.PdfFileCreation.TwoInOne:
+                    // All course pages are combined in pairs into larger PDF pages.
                     fileList.Add(new Pair<string, IEnumerable<CourseDesignator>>(CreateOutputFileName(null),
                                  QueryEvent.EnumerateCourseDesignators(eventDB, coursePdfSettings.CourseIds, coursePdfSettings.VariationChoicesPerCourse, !coursePdfSettings.PrintMapExchangesOnOneMap)));
                     break;
@@ -186,15 +205,11 @@ namespace PurplePen
         // Create a single PDF file
         void CreateOnePdfFile(string fileName, IEnumerable<CourseDesignator> courseDesignators)
         {
-            List<CoursePage> pages = LayoutPages(courseDesignators);
+            List<OutputPdfPage> pages = LayoutOutputPages(courseDesignators);
             IPdfDocumentWriter pdfDocumentWriter = Services.PdfWriter.CreateDocument(fileName, Path.GetFileNameWithoutExtension(fileName), coursePdfSettings.ColorModel == ColorModel.CMYK);
 
-            foreach (CoursePage page in pages) {
-                CoursePage pageToDraw = page;
-
-                SizeF paperSize = new SizeF(pageToDraw.paperSize.SizeInInches.Width, pageToDraw.paperSize.SizeInInches.Height);
-                if (pageToDraw.landscape)
-                    paperSize = new SizeF(paperSize.Height, paperSize.Width);
+            foreach (OutputPdfPage page in pages) {
+                SizeF paperSize = page.PaperSize;
 
                 if (coursePdfSettings.ShowProgressDialog)
                 {
@@ -205,6 +220,7 @@ namespace PurplePen
                 }
 
                 IGraphicsTarget grTarget;
+                CoursePage firstCoursePage = page.CoursePages[0].Page;
 
                 if (coursePdfSettings.DontPrintBaseMap) {
                     // Don't print the base map, just the course.
@@ -212,27 +228,33 @@ namespace PurplePen
                     grTarget = pdfDocumentWriter.BeginPage(paperSize);
                 }
                 else if (IsPdfMap) {
-                    // Import the base map from the PDF map file, so that it is vector, not raster.
+                    if (coursePdfSettings.FileCreation != CoursePdfSettings.PdfFileCreation.TwoInOne) {
+                        // Import the base map from the PDF map file, so that it is vector, not raster.
+                        // We need to re-obtain a PdfImporter every time, or else very strange bugs start to crop up.
+                        float scaleRatio = CourseView.CreatePrintingCourseView(eventDB, firstCoursePage.courseDesignator).ScaleRatio;
+                        RectangleF sourcePortionInInches = GetSourcePortionInInches(firstCoursePage);
+                        RectangleF cropRectangleInInches = GetDestinationRectangleInInches(page.CoursePages[0]);
 
-                    // We need to re-obtain a PdfImporter every time, or else very strange bugs start to crop up.
-
-                    float scaleRatio = CourseView.CreatePrintingCourseView(eventDB, page.courseDesignator).ScaleRatio;
-                    RectangleF sourcePortionInInches = new RectangleF(
-                        Geometry.InchesFromMm(page.mapRectangle.Left),
-                        Geometry.InchesFromMm(mapBounds.Height - page.mapRectangle.Bottom),
-                        Geometry.InchesFromMm(page.mapRectangle.Width),
-                        Geometry.InchesFromMm(page.mapRectangle.Height));
-                    RectangleF cropRectangleInInches = new RectangleF(page.printRectangle.Left / 100F, page.printRectangle.Top / 100F,
-                                                                    page.printRectangle.Width / 100F, page.printRectangle.Height / 100F);
-
-                    if (scaleRatio == 1.0 && Geometry.SimilarRectangles(cropRectangleInInches, new RectangleF(0, 0, paperSize.Width, paperSize.Height), 0.01F) &&
-                        Geometry.SimilarRectangles(page.mapRectangle, mapBounds, 0.01F)) 
-                    {
-                        // If we're doing a PDF at scale 1, no cropping, and the print area is the same as the page size, we just copy the page directly.
-                        grTarget = pdfDocumentWriter.BeginCopiedPage(sourcePdfMapFileName, 0);
+                        if (scaleRatio == 1.0 && Geometry.SimilarRectangles(cropRectangleInInches, new RectangleF(0, 0, paperSize.Width, paperSize.Height), 0.01F) &&
+                            Geometry.SimilarRectangles(firstCoursePage.mapRectangle, mapBounds, 0.01F))
+                        {
+                            // If we're doing a PDF at scale 1, no cropping, and the print area is the same as the page size, we just copy the page directly.
+                            grTarget = pdfDocumentWriter.BeginCopiedPage(sourcePdfMapFileName, 0);
+                        }
+                        else {
+                            grTarget = pdfDocumentWriter.BeginCopiedPartialPage(sourcePdfMapFileName, 0, paperSize, sourcePortionInInches, cropRectangleInInches);
+                        }
                     }
                     else {
-                        grTarget = pdfDocumentWriter.BeginCopiedPartialPage(sourcePdfMapFileName, 0, paperSize, sourcePortionInInches, cropRectangleInInches);
+                        CoursePagePlacement firstPlacement = page.CoursePages[0];
+                        grTarget = pdfDocumentWriter.BeginCopiedPartialPage(sourcePdfMapFileName, 0, paperSize,
+                            GetSourcePortionInInches(firstPlacement.Page), GetDestinationRectangleInInches(firstPlacement));
+
+                        for (int i = 1; i < page.CoursePages.Count; ++i) {
+                            CoursePagePlacement placement = page.CoursePages[i];
+                            pdfDocumentWriter.DrawCopiedPartialPage(grTarget, sourcePdfMapFileName, 0,
+                                GetSourcePortionInInches(placement.Page), GetDestinationRectangleInInches(placement));
+                        }
                     }
 
                     // Don't draw the map normally, which would case the rasterized map to be drawn over the PDF map.
@@ -242,7 +264,9 @@ namespace PurplePen
                     grTarget = pdfDocumentWriter.BeginPage(paperSize);
                 }
 
-                DrawPage(grTarget, pageToDraw);
+                foreach (CoursePagePlacement placement in page.CoursePages) {
+                    DrawPage(grTarget, PageWithOffset(placement));
+                }
                 pdfDocumentWriter.EndPage(grTarget);
                 grTarget.Dispose();
 
@@ -250,6 +274,81 @@ namespace PurplePen
             }
 
             pdfDocumentWriter.Save();
+        }
+
+        private RectangleF GetSourcePortionInInches(CoursePage page)
+        {
+            return new RectangleF(
+                Geometry.InchesFromMm(page.mapRectangle.Left),
+                Geometry.InchesFromMm(mapBounds.Height - page.mapRectangle.Bottom),
+                Geometry.InchesFromMm(page.mapRectangle.Width),
+                Geometry.InchesFromMm(page.mapRectangle.Height));
+        }
+
+        private static RectangleF GetDestinationRectangleInInches(CoursePagePlacement placement)
+        {
+            RectangleF printRectangle = placement.Page.printRectangle;
+            printRectangle.Offset(placement.OffsetX * 100F, placement.OffsetY * 100F);
+            return new RectangleF(printRectangle.Left / 100F, printRectangle.Top / 100F,
+                                  printRectangle.Width / 100F, printRectangle.Height / 100F);
+        }
+
+        private static CoursePage PageWithOffset(CoursePagePlacement placement)
+        {
+            CoursePage page = new CoursePage {
+                courseDesignator = placement.Page.courseDesignator,
+                description = placement.Page.description,
+                mapRectangle = placement.Page.mapRectangle,
+                printRectangle = placement.Page.printRectangle,
+                landscape = placement.Page.landscape,
+                paperSize = placement.Page.paperSize,
+                lastPageOfCourseOrPart = placement.Page.lastPageOfCourseOrPart,
+            };
+            page.printRectangle.Offset(placement.OffsetX * 100F, placement.OffsetY * 100F);
+            return page;
+        }
+
+        private List<OutputPdfPage> LayoutOutputPages(IEnumerable<CourseDesignator> courseDesignators)
+        {
+            List<CoursePage> coursePages = LayoutPages(courseDesignators);
+            List<OutputPdfPage> outputPages = new List<OutputPdfPage>();
+
+            for (int i = 0; i < coursePages.Count; ) {
+                CoursePage firstPage = coursePages[i];
+                float paperWidth = firstPage.landscape ? firstPage.paperSize.SizeInInches.Height : firstPage.paperSize.SizeInInches.Width;
+                float paperHeight = firstPage.landscape ? firstPage.paperSize.SizeInInches.Width : firstPage.paperSize.SizeInInches.Height;
+                bool twoInOne = coursePdfSettings.FileCreation == CoursePdfSettings.PdfFileCreation.TwoInOne;
+                bool hasSecondPage = twoInOne && i + 1 < coursePages.Count && CanCombinePages(firstPage, coursePages[i + 1]);
+
+                OutputPdfPage outputPage = new OutputPdfPage {
+                    PaperSize = twoInOne
+                        ? (firstPage.landscape ? new SizeF(paperWidth, paperHeight * 2F) : new SizeF(paperWidth * 2F, paperHeight))
+                        : new SizeF(paperWidth, paperHeight),
+                };
+                outputPage.CoursePages.Add(new CoursePagePlacement { Page = firstPage });
+
+                if (hasSecondPage) {
+                    CoursePage secondPage = coursePages[i + 1];
+                    CoursePagePlacement secondPlacement = new CoursePagePlacement { Page = secondPage };
+                    if (firstPage.landscape)
+                        secondPlacement.OffsetY = paperHeight;
+                    else
+                        secondPlacement.OffsetX = paperWidth;
+                    outputPage.CoursePages.Add(secondPlacement);
+                }
+
+                outputPages.Add(outputPage);
+                i += hasSecondPage ? 2 : 1;
+            }
+
+            return outputPages;
+        }
+
+        private static bool CanCombinePages(CoursePage firstPage, CoursePage secondPage)
+        {
+            return firstPage.landscape == secondPage.landscape
+                   && Math.Abs(firstPage.paperSize.SizeInInches.Width - secondPage.paperSize.SizeInInches.Width) < 0.01F
+                   && Math.Abs(firstPage.paperSize.SizeInInches.Height - secondPage.paperSize.SizeInInches.Height) < 0.01F;
         }
 
         // Layout the pages for a set of course designators.
