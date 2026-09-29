@@ -319,21 +319,24 @@ namespace PurplePen
                 float paperHeight = firstPage.landscape ? firstPage.paperSize.SizeInInches.Width : firstPage.paperSize.SizeInInches.Height;
                 bool twoInOne = coursePdfSettings.FileCreation == CoursePdfSettings.PdfFileCreation.TwoInOne;
                 bool hasSecondPage = twoInOne && i + 1 < coursePages.Count && CanCombinePages(firstPage, coursePages[i + 1]);
+                SizeF outputPaperSize = twoInOne
+                    ? FindStandardPaperSize(firstPage.landscape ? new SizeF(paperWidth, paperHeight * 2F) : new SizeF(paperWidth * 2F, paperHeight))
+                    : new SizeF(paperWidth, paperHeight);
+                float firstOffsetX = twoInOne ? (outputPaperSize.Width - (firstPage.landscape ? paperWidth : paperWidth * 2F)) / 2F : 0F;
+                float firstOffsetY = twoInOne ? (outputPaperSize.Height - (firstPage.landscape ? paperHeight * 2F : paperHeight)) / 2F : 0F;
 
                 OutputPdfPage outputPage = new OutputPdfPage {
-                    PaperSize = twoInOne
-                        ? (firstPage.landscape ? new SizeF(paperWidth, paperHeight * 2F) : new SizeF(paperWidth * 2F, paperHeight))
-                        : new SizeF(paperWidth, paperHeight),
+                    PaperSize = outputPaperSize,
                 };
-                outputPage.CoursePages.Add(new CoursePagePlacement { Page = firstPage });
+                outputPage.CoursePages.Add(new CoursePagePlacement { Page = firstPage, OffsetX = firstOffsetX, OffsetY = firstOffsetY });
 
                 if (hasSecondPage) {
                     CoursePage secondPage = coursePages[i + 1];
-                    CoursePagePlacement secondPlacement = new CoursePagePlacement { Page = secondPage };
+                    CoursePagePlacement secondPlacement = new CoursePagePlacement { Page = secondPage, OffsetX = firstOffsetX, OffsetY = firstOffsetY };
                     if (firstPage.landscape)
-                        secondPlacement.OffsetY = paperHeight;
+                        secondPlacement.OffsetY += paperHeight;
                     else
-                        secondPlacement.OffsetX = paperWidth;
+                        secondPlacement.OffsetX += paperWidth;
                     outputPage.CoursePages.Add(secondPlacement);
                 }
 
@@ -342,6 +345,23 @@ namespace PurplePen
             }
 
             return outputPages;
+        }
+
+        private static SizeF FindStandardPaperSize(SizeF desiredSizeInInches)
+        {
+            foreach (PrintingPaperSize paperSize in PrintingStandards.StandardPaperSizes) {
+                SizeF size = paperSize.SizeInInches;
+                if (Math.Abs(size.Width - desiredSizeInInches.Width) < 0.05F
+                    && Math.Abs(size.Height - desiredSizeInInches.Height) < 0.05F)
+                    return size;
+
+                SizeF flippedSize = new SizeF(size.Height, size.Width);
+                if (Math.Abs(flippedSize.Width - desiredSizeInInches.Width) < 0.05F
+                    && Math.Abs(flippedSize.Height - desiredSizeInInches.Height) < 0.05F)
+                    return flippedSize;
+            }
+
+            return desiredSizeInInches;
         }
 
         private static bool CanCombinePages(CoursePage firstPage, CoursePage secondPage)

@@ -931,6 +931,61 @@ namespace PurplePen.Tests
                 new string[] { TestUtil.GetTestFile("controller\\pdf_badistream\\Long_expected.png") });
         }
 
+        [TestMethod]
+        public async Task Files_TwoInOne_CombinesA5CoursesOnA4()
+        {
+            bool success = await controller.LoadInitialFile(TestUtil.GetTestFile("controller\\mapexchange1.ppen"), true);
+            Assert.IsTrue(success);
+
+            EventDB eventDB = controller.GetEventDB();
+            PrintArea a5PrintArea = new PrintArea(false, false, controller.MapDisplay.MapBounds);
+            a5PrintArea.pageWidth = 583;
+            a5PrintArea.pageHeight = 827;
+            a5PrintArea.pageMargins = 0;
+            a5PrintArea.pageLandscape = false;
+            ChangeEvent.ChangePrintArea(eventDB, new CourseDesignator(CourseId(1)), true, a5PrintArea);
+            ChangeEvent.ChangePrintArea(eventDB, new CourseDesignator(CourseId(6)), true, a5PrintArea);
+
+            CoursePdfSettings settings = new CoursePdfSettings {
+                CourseIds = new Id<Course>[] { CourseId(1), CourseId(6) },
+                AllCourses = false,
+                outputDirectory = TestUtil.GetTestFile("controller\\pdf_create1"),
+                ColorModel = ColorModel.RGB,
+                CropLargePrintArea = true,
+                FileCreation = CoursePdfSettings.PdfFileCreation.TwoInOne,
+                ShowProgressDialog = false,
+            };
+
+            CoursePdf coursePdf = new CoursePdf(eventDB, ui.symbolDB, controller, controller.MapDisplay.CloneToFullIntensity(),
+                                                settings, new CourseAppearance());
+            List<Pair<string, IEnumerable<CourseDesignator>>> filesToCreate = coursePdf.GetFilesToCreate();
+            Assert.AreEqual(1, filesToCreate.Count);
+            string outputFile = filesToCreate[0].First;
+            File.Delete(outputFile);
+
+            coursePdf.CreatePdfs();
+
+            Assert.IsTrue(File.Exists(outputFile));
+            PdfMapFile mapFile = new PdfMapFile(outputFile);
+            string pngFile = Path.Combine(Path.GetDirectoryName(outputFile), "two_in_one_page%d_temp.png");
+            mapFile.BeginUncachedConversion(pngFile, 200);
+            while (mapFile.Status == PdfMapFile.ConversionStatus.Working)
+                System.Threading.Thread.Sleep(10);
+            Assert.AreEqual(PdfMapFile.ConversionStatus.Success, mapFile.Status);
+
+            string firstPage = pngFile.Replace("%d", "1");
+            string secondPage = pngFile.Replace("%d", "2");
+            Assert.IsTrue(File.Exists(firstPage));
+            Assert.IsFalse(File.Exists(secondPage));
+            using (Bitmap bitmap = (Bitmap)Image.FromFile(firstPage)) {
+                Assert.AreEqual(2338, bitmap.Width);
+                Assert.AreEqual(1654, bitmap.Height);
+            }
+
+            File.Delete(outputFile);
+            File.Delete(firstPage);
+        }
+
 
     }
 }
