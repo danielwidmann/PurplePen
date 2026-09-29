@@ -62,6 +62,7 @@ namespace PurplePen
         private string sourcePdfMapFileName;
         private int totalPages, currentPage;
 
+        // A course page's position within a physical PDF page.
         private class CoursePagePlacement
         {
             public CoursePage Page;
@@ -69,6 +70,7 @@ namespace PurplePen
             public float OffsetY;
         }
 
+        // A PDF page containing one course page or a two-in-one pair.
         private class OutputPdfPage
         {
             public SizeF PaperSize;
@@ -276,6 +278,7 @@ namespace PurplePen
             pdfDocumentWriter.Save();
         }
 
+        // Get the portion of the source PDF map covered by a course page.
         private RectangleF GetSourcePortionInInches(CoursePage page)
         {
             return new RectangleF(
@@ -285,6 +288,7 @@ namespace PurplePen
                 Geometry.InchesFromMm(page.mapRectangle.Height));
         }
 
+        // Get the destination rectangle for a course page, including its two-in-one offset.
         private static RectangleF GetDestinationRectangleInInches(CoursePagePlacement placement)
         {
             RectangleF printRectangle = placement.Page.printRectangle;
@@ -293,6 +297,7 @@ namespace PurplePen
                                   printRectangle.Width / 100F, printRectangle.Height / 100F);
         }
 
+        // Copy a course page and apply its position on the output sheet.
         private static CoursePage PageWithOffset(CoursePagePlacement placement)
         {
             CoursePage page = new CoursePage {
@@ -308,6 +313,7 @@ namespace PurplePen
             return page;
         }
 
+        // Layout course pages onto the output sheets required by the selected file creation mode.
         private List<OutputPdfPage> LayoutOutputPages(IEnumerable<CourseDesignator> courseDesignators)
         {
             List<CoursePage> coursePages = LayoutPages(courseDesignators);
@@ -347,6 +353,7 @@ namespace PurplePen
             return outputPages;
         }
 
+        // Prefer a standard paper size when the combined page dimensions are a close match.
         private static SizeF FindStandardPaperSize(SizeF desiredSizeInInches)
         {
             foreach (PrintingPaperSize paperSize in PrintingStandards.StandardPaperSizes) {
@@ -364,6 +371,7 @@ namespace PurplePen
             return desiredSizeInInches;
         }
 
+        // Pages can share a sheet only if their paper dimensions and orientations match.
         private static bool CanCombinePages(CoursePage firstPage, CoursePage secondPage)
         {
             return firstPage.landscape == secondPage.landscape

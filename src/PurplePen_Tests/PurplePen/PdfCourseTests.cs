@@ -950,6 +950,7 @@ namespace PurplePen.Tests
                 CourseIds = new Id<Course>[] { CourseId(1), CourseId(6) },
                 AllCourses = false,
                 outputDirectory = TestUtil.GetTestFile("controller\\pdf_create1"),
+                filePrefix = "two-in-one-test",
                 ColorModel = ColorModel.RGB,
                 CropLargePrintArea = true,
                 FileCreation = CoursePdfSettings.PdfFileCreation.TwoInOne,
@@ -967,7 +968,7 @@ namespace PurplePen.Tests
 
             Assert.IsTrue(File.Exists(outputFile));
             PdfMapFile mapFile = new PdfMapFile(outputFile);
-            string pngFile = Path.Combine(Path.GetDirectoryName(outputFile), "two_in_one_page%d_temp.png");
+            string pngFile = Path.Combine(Path.GetDirectoryName(outputFile), "two-in-one-test_page%d_temp.png");
             mapFile.BeginUncachedConversion(pngFile, 200);
             while (mapFile.Status == PdfMapFile.ConversionStatus.Working)
                 System.Threading.Thread.Sleep(10);
