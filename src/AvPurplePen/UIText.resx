@@ -1464,6 +1464,9 @@
   <data name="CreatePdfCourses_comboBoxFileFormat_Items2" xml:space="preserve">
     <value>One per course part/variation</value>
   </data>
+  <data name="CreatePdfCourses_comboBoxFileFormat_Items3" xml:space="preserve">
+    <value>Two in One</value>
+  </data>
   <data name="CreatePdfCourses_outputGroupBox_Text" xml:space="preserve">
     <value>Files</value>
   </data>

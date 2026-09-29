@@ -282,7 +282,8 @@ namespace PurplePen
             this.comboBoxFileFormat.Items.AddRange(new object[] {
             resources.GetString("comboBoxFileFormat.Items"),
             resources.GetString("comboBoxFileFormat.Items1"),
-            resources.GetString("comboBoxFileFormat.Items2")});
+            resources.GetString("comboBoxFileFormat.Items2"),
+            resources.GetString("comboBoxFileFormat.Items3")});
             this.comboBoxFileFormat.Name = "comboBoxFileFormat";
             // 
             // folderBrowserDialog

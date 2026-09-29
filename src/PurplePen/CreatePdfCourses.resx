@@ -795,6 +795,9 @@
   <data name="comboBoxFileFormat.Items2" xml:space="preserve">
     <value>One per course part/variation</value>
   </data>
+  <data name="comboBoxFileFormat.Items3" xml:space="preserve">
+    <value>Two in One</value>
+  </data>
   <data name="comboBoxFileFormat.Location" type="System.Drawing.Point, System.Drawing">
     <value>75, 32</value>
   </data>

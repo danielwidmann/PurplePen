@@ -59,7 +59,7 @@ namespace PurplePen
         // variation choices for courses with variations.
         public Dictionary<Id<Course>, VariationChoices> VariationChoicesPerCourse = new Dictionary<Id<Course>, VariationChoices>();
 
-        public enum PdfFileCreation { SingleFile, FilePerCourse, FilePerCoursePart };
+        public enum PdfFileCreation { SingleFile, FilePerCourse, FilePerCoursePart, TwoInOne };
 
         public CoursePdfSettings Clone()
         {
